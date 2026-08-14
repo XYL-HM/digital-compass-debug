@@ -40,6 +40,16 @@
     th,td { padding:7px 9px; border-bottom:1px solid #202923; text-align:right; white-space:nowrap; }
     th { position:sticky; top:0; background:#111613; color:var(--muted); } th:first-child,td:first-child{text-align:left;}
     .note { font-size:12px; margin-top:12px; line-height:1.6; }
+    .export-overlay { position:fixed; inset:0; z-index:50; display:grid; place-items:center;
+      padding:20px; background:#000b; }
+    .export-overlay[hidden] { display:none; }
+    .export-dialog { width:min(760px,100%); max-height:90vh; overflow:auto; padding:18px;
+      background:#101713; border:1px solid #3a5144; border-radius:14px; box-shadow:0 20px 70px #000a; }
+    .export-dialog h2 { margin:0 0 8px; } .export-dialog p { color:var(--muted); line-height:1.6; }
+    .export-dialog textarea { width:100%; height:45vh; resize:vertical; padding:10px;
+      color:#e9f2ec; background:#080b0a; border:1px solid var(--line); border-radius:8px;
+      font:12px/1.45 ui-monospace,Consolas,monospace; }
+    .export-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
     @media(max-width:1000px){.accel-charts,.gyro-charts{grid-template-columns:1fr}.grid{grid-template-columns:repeat(3,1fr)}}
     @media(max-width:900px){.heading-charts,.motion-charts{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}}
     @media(max-width:520px){.grid{grid-template-columns:repeat(2,1fr)}main{width:min(100% - 20px,1480px)}}
@@ -92,10 +102,20 @@
     <th>GCRX</th><th>GCRY</th><th>GCRZ</th>
   </tr></thead><tbody id="rows"></tbody></table></section>
   <div class="note">加速度轴只保留 Light LPF 与 Calibration LPF。总加速度、向量变化和模长变化均来自 Calibration LPF；AVD/AMD 使用静止调光与自动关机的自适应参考。陀螺仪左轴为角速度（°/s），右轴紫色曲线为校准滤波后的逐轴角速度变化率（°/s²）。页面可以直接用当前 Chrome 打开，也可以使用启动脚本。</div>
-</main><script>
+</main>
+<div id="exportOverlay" class="export-overlay" hidden>
+  <div class="export-dialog">
+    <h2>CSV导出备用方式</h2>
+    <p>当前iOS浏览器没有完成文件下载。可复制下面的CSV文本，或者尝试在新页面打开后使用系统分享菜单。</p>
+    <textarea id="csvText" readonly></textarea>
+    <div class="export-actions"><button id="copyCsv" class="primary">复制CSV</button><button id="openCsv">在新页面打开</button><button id="closeExport">关闭</button></div>
+  </div>
+</div>
+<script>
 'use strict';
 const SERVICE='6e400001-b5a3-f393-e0a9-e50e24dcca9e',TX='6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 let device=null,characteristic=null,textBuffer='',recording=true;
+let pendingCsvText='',pendingCsvName='',pendingCsvUrl=null;
 const decoder=new TextDecoder(),records=[],history=[],$=id=>document.getElementById(id);
 const accelLegend='<span><i style="background:#63d6ff"></i>Light LPF</span><span><i style="background:#7cff91"></i>Calibration LPF</span>';
 document.querySelectorAll('.accel-legend').forEach(e=>e.innerHTML=accelLegend);
@@ -114,7 +134,12 @@ function onNotify(event){const v=event.target.value;textBuffer+=decoder.decode(n
 async function connect(){try{if(!navigator.bluetooth)throw new Error('当前 Chrome 环境不支持 Web Bluetooth');setStatus('正在选择设备…');device=await navigator.bluetooth.requestDevice({filters:[{services:[SERVICE]}]});device.addEventListener('gattserverdisconnected',()=>{setStatus('连接已断开');$('connect').textContent='重新连接';$('record').disabled=true;});setStatus('正在建立 BLE 连接…');const server=await device.gatt.connect(),service=await server.getPrimaryService(SERVICE);characteristic=await service.getCharacteristic(TX);await characteristic.startNotifications();characteristic.addEventListener('characteristicvaluechanged',onNotify);setStatus(`已连接：${device.name||'Digital-Compass'}`,true);$('connect').textContent='断开';$('record').disabled=false;}catch(e){console.error(e);setStatus(`连接失败：${e.message}`);}}
 async function toggleConnection(){if(device?.gatt?.connected){device.gatt.disconnect();$('connect').textContent='重新连接';return;}await connect();}
 function clearData(){records.length=0;history.length=0;$('rows').innerHTML='';$('count').textContent='0';$('download').disabled=true;drawAll();}
-function downloadCsv(){const columns=['hostTime','ms','GyroDeg','MagDeg','DiffDeg','GyroRate','FAX','FAY','FAZ','CAX','CAY','CAZ','AMAG','AVD','AMD','GRX','GRY','GRZ','CGX','CGY','CGZ','GCRX','GCRY','GCRZ'];const csv=[columns.join(','),...records.map(r=>columns.map(c=>Number.isFinite(r[c])||c==='hostTime'?r[c]:'').join(','))].join('\r\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'})),a=document.createElement('a');a.href=url;a.download=`compass-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;a.click();URL.revokeObjectURL(url);}
+function buildCsv(){const columns=['hostTime','ms','GyroDeg','MagDeg','DiffDeg','GyroRate','FAX','FAY','FAZ','CAX','CAY','CAZ','AMAG','AVD','AMD','GRX','GRY','GRZ','CGX','CGY','CGZ','GCRX','GCRY','GCRZ'];return[columns.join(','),...records.map(r=>columns.map(c=>Number.isFinite(r[c])||c==='hostTime'?r[c]:'').join(','))].join('\r\n');}
+function showCsvFallback(csv,name){pendingCsvText=csv;pendingCsvName=name;$('csvText').value=csv;$('exportOverlay').hidden=false;setStatus('当前浏览器未完成文件下载，请使用CSV备用导出',true);}
+async function downloadCsv(){const csv=buildCsv(),name=`compass-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`,blob=new Blob([csv],{type:'text/csv;charset=utf-8'}),isIOS=/iPhone|iPad|iPod/i.test(navigator.userAgent);if(typeof File==='function'&&navigator.share&&navigator.canShare){const file=new File([blob],name,{type:'text/csv'});try{if(navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'Digital Compass diagnostic CSV'});setStatus('CSV已交给iOS系统分享菜单',true);return;}}catch(e){if(e.name==='AbortError')return;console.warn('File share failed',e);}}if(!isIOS){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);return;}showCsvFallback(csv,name);}
+async function copyPendingCsv(){let copied=false;try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(pendingCsvText);copied=true;}}catch(e){console.warn('Clipboard API failed',e);}if(!copied){$('csvText').focus();$('csvText').select();copied=document.execCommand('copy');}setStatus(copied?'CSV已复制，可粘贴到备忘录或表格应用':'自动复制失败，请长按文本并手动复制',true);}
+function openPendingCsv(){if(pendingCsvUrl)URL.revokeObjectURL(pendingCsvUrl);pendingCsvUrl=URL.createObjectURL(new Blob([pendingCsvText],{type:'text/csv;charset=utf-8'}));const opened=window.open(pendingCsvUrl,'_blank');setStatus(opened?'CSV已在新页面打开，请使用iOS分享菜单':'Bluefy阻止了新页面，请使用复制CSV',true);}
+function closeCsvFallback(){$('exportOverlay').hidden=true;}
 function setupCanvas(canvas){const dpr=devicePixelRatio||1,r=canvas.getBoundingClientRect();canvas.width=Math.max(1,r.width*dpr);canvas.height=Math.max(1,r.height*dpr);const c=canvas.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);return{c,w:r.width,h:r.height};}
 function autoRange(keys,minimumSpan=.08,symmetric=false){const values=[];for(const r of history)for(const k of keys)if(Number.isFinite(r[k]))values.push(r[k]);if(!values.length)return symmetric?[-minimumSpan/2,minimumSpan/2]:[-1,1];let min=Math.min(...values),max=Math.max(...values);if(symmetric){const extent=Math.max(Math.abs(min),Math.abs(max),minimumSpan/2)*1.12;return[-extent,extent];}let span=max-min;if(span<minimumSpan){const mid=(min+max)/2;min=mid-minimumSpan/2;max=mid+minimumSpan/2;span=minimumSpan;}const margin=span*.12;return[min-margin,max+margin];}
 function drawSeries(c,key,color,range,p,w,h,width=1.6){c.beginPath();c.strokeStyle=color;c.lineWidth=width;let started=false;history.forEach((r,i)=>{const v=r[key];if(!Number.isFinite(v)){started=false;return;}const x=p.l+(w-p.l-p.r)*i/Math.max(1,history.length-1),y=p.t+(range[1]-v)/(range[1]-range[0])*(h-p.t-p.b);if(!started){c.moveTo(x,y);started=true;}else c.lineTo(x,y);});c.stroke();}
@@ -123,5 +148,5 @@ function accelChart(id,keys){const range=autoRange(keys,.08);chart(id,keys,['#63
 function movementChart(){const id='accelDeltaChart',keys=['AVD','AMD'],range=autoRange(keys,.06);range[0]=0;range[1]=Math.max(range[1],.06);const{c,w,h}=setupCanvas($(id)),p={l:48,r:10,t:8,b:22};c.font='11px Segoe UI';c.lineWidth=1;for(let i=0;i<=4;i++){const y=p.t+(h-p.t-p.b)*i/4,value=range[1]-(range[1]-range[0])*i/4;c.strokeStyle='#26322b';c.beginPath();c.moveTo(p.l,y);c.lineTo(w-p.r,y);c.stroke();c.fillStyle='#829087';c.fillText(value.toFixed(3),4,y+4);}for(const [value,color] of [[.05,'#7cff9188'],[.03,'#ff9d3788']]){const y=p.t+(range[1]-value)/(range[1]-range[0])*(h-p.t-p.b);c.save();c.strokeStyle=color;c.setLineDash([5,4]);c.beginPath();c.moveTo(p.l,y);c.lineTo(w-p.r,y);c.stroke();c.restore();}if(history.length>=2){drawSeries(c,'AVD','#7cff91',range,p,w,h);drawSeries(c,'AMD','#ff9d37',range,p,w,h);}}
 function gyroChart(id,leftKeys,rightKey){const{c,w,h}=setupCanvas($(id));c.clearRect(0,0,w,h);const p={l:48,r:58,t:8,b:22},left=autoRange(leftKeys,.5),right=autoRange([rightKey],50,true);c.font='11px Segoe UI';c.lineWidth=1;for(let i=0;i<=4;i++){const y=p.t+(h-p.t-p.b)*i/4,leftValue=left[1]-(left[1]-left[0])*i/4,rightValue=right[1]-(right[1]-right[0])*i/4;c.strokeStyle='#26322b';c.beginPath();c.moveTo(p.l,y);c.lineTo(w-p.r,y);c.stroke();c.fillStyle='#829087';c.fillText(leftValue.toFixed(2),4,y+4);c.fillStyle='#b88bd1';c.fillText(rightValue.toFixed(0),w-p.r+6,y+4);}for(const threshold of [-25,25]){const y=p.t+(right[1]-threshold)/(right[1]-right[0])*(h-p.t-p.b);c.save();c.strokeStyle='#cc8cff99';c.setLineDash([5,4]);c.beginPath();c.moveTo(p.l,y);c.lineTo(w-p.r,y);c.stroke();c.restore();}if(history.length<2)return;drawSeries(c,leftKeys[0],'#ff9d37',left,p,w,h);drawSeries(c,leftKeys[1],'#7cff91',left,p,w,h);drawSeries(c,rightKey,'#cc8cff',right,p,w,h,1.5);}
 function drawAll(){chart('angleChart',['GyroDeg','MagDeg'],['#63d6ff','#7cff91'],0,360);chart('errorChart',['DiffDeg'],['#ff9d37'],-180,180);accelChart('accelXChart',['FAX','CAX']);accelChart('accelYChart',['FAY','CAY']);accelChart('accelZChart',['FAZ','CAZ']);const magRange=autoRange(['AMAG'],.08);chart('accelMagnitudeChart',['AMAG'],['#63d6ff'],magRange[0],magRange[1],3);movementChart();gyroChart('gyroXChart',['GRX','CGX'],'GCRX');gyroChart('gyroYChart',['GRY','CGY'],'GCRY');gyroChart('gyroZChart',['GRZ','CGZ'],'GCRZ');}
-$('connect').addEventListener('click',toggleConnection);$('record').addEventListener('click',()=>{recording=!recording;$('record').textContent=recording?'暂停记录':'继续记录';});$('clear').addEventListener('click',clearData);$('download').addEventListener('click',downloadCsv);addEventListener('resize',drawAll);drawAll();
+$('connect').addEventListener('click',toggleConnection);$('record').addEventListener('click',()=>{recording=!recording;$('record').textContent=recording?'暂停记录':'继续记录';});$('clear').addEventListener('click',clearData);$('download').addEventListener('click',downloadCsv);$('copyCsv').addEventListener('click',copyPendingCsv);$('openCsv').addEventListener('click',openPendingCsv);$('closeExport').addEventListener('click',closeCsvFallback);addEventListener('resize',drawAll);drawAll();
 </script></body></html>
