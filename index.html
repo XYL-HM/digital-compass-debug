@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Digital Compass BLE Debug</title>
+  <style>
+    :root { color-scheme:dark; --bg:#080b0a; --panel:#111613; --line:#26322b;
+      --green:#7cff91; --orange:#ff9d37; --cyan:#63d6ff; --purple:#cc8cff; --muted:#8d9b92; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 50% -20%,#1d2c24 0,#080b0a 48%);
+      color:#e9f2ec; font-family:Inter,Segoe UI,Arial,sans-serif; }
+    main { width:min(1480px,calc(100% - 32px)); margin:24px auto 48px; }
+    header { display:flex; justify-content:space-between; align-items:flex-end; gap:20px; margin-bottom:18px; }
+    h1 { margin:0; font-size:clamp(24px,4vw,42px); letter-spacing:-.03em; }
+    .sub,.note { color:var(--muted); } .sub { margin-top:6px; }
+    .toolbar,.legend { display:flex; flex-wrap:wrap; gap:10px; }
+    button { border:1px solid var(--line); border-radius:10px; padding:10px 14px; background:#171e1a;
+      color:#e9f2ec; cursor:pointer; font-weight:650; }
+    button:hover { border-color:#4b6657; } button.primary { background:var(--green); color:#071009; border-color:var(--green); }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .status { display:flex; align-items:center; gap:8px; margin:12px 0 18px; color:var(--muted); }
+    .dot { width:9px; height:9px; border-radius:50%; background:#6c746f; box-shadow:0 0 0 4px #6c746f22; }
+    .dot.on { background:var(--green); box-shadow:0 0 0 4px #7cff9122,0 0 14px #7cff91; }
+    .grid { display:grid; grid-template-columns:repeat(5,minmax(120px,1fr)); gap:10px; }
+    .card,.panel { background:linear-gradient(145deg,#141a16,#0d110f); border:1px solid var(--line); border-radius:14px; }
+    .card { padding:14px; min-height:100px; } .panel { padding:14px; min-width:0; }
+    .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.1em; }
+    .value { margin-top:12px; font:700 28px/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .unit { color:var(--muted); font-size:12px; margin-left:3px; }
+    .heading-charts { display:grid; grid-template-columns:2fr 1fr; gap:10px; margin-top:10px; }
+    .accel-charts,.gyro-charts { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:10px; }
+    .motion-charts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:10px; }
+    .panel h2 { margin:0 0 10px; font-size:14px; color:#bcc9c0; }
+    canvas { width:100%; height:260px; display:block; }
+    .legend { color:var(--muted); font-size:12px; }
+    .legend i { display:inline-block; width:12px; height:3px; margin-right:5px; vertical-align:middle; }
+    .table-wrap { margin-top:10px; max-height:310px; overflow:auto; }
+    table { border-collapse:collapse; width:100%; font:12px/1.5 ui-monospace,Consolas,monospace; }
+    th,td { padding:7px 9px; border-bottom:1px solid #202923; text-align:right; white-space:nowrap; }
+    th { position:sticky; top:0; background:#111613; color:var(--muted); } th:first-child,td:first-child{text-align:left;}
+    .note { font-size:12px; margin-top:12px; line-height:1.6; }
+    @media(max-width:1000px){.accel-charts,.gyro-charts{grid-template-columns:1fr}.grid{grid-template-columns:repeat(3,1fr)}}
+    @media(max-width:900px){.heading-charts,.motion-charts{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}}
+    @media(max-width:520px){.grid{grid-template-columns:repeat(2,1fr)}main{width:min(100% - 20px,1480px)}}
+  </style>
+</head>
+<body><main>
+  <header>
+    <div><h1>Compass BLE Debug</h1><div class="sub">QMI8658 · 10 Hz diagnostic stream</div></div>
+    <div class="toolbar">
+      <button id="connect" class="primary">连接设备</button><button id="record" disabled>暂停记录</button>
+      <button id="clear">清空</button><button id="download" disabled>下载 CSV</button>
+    </div>
+  </header>
+  <div class="status"><span id="dot" class="dot"></span><span id="status">等待连接 Digital-Compass</span></div>
+  <section class="grid">
+    <div class="card"><div class="label">Gyro heading</div><div class="value"><span id="gyro">--</span><span class="unit">°</span></div></div>
+    <div class="card"><div class="label">Mag heading</div><div class="value"><span id="mag">--</span><span class="unit">°</span></div></div>
+    <div class="card"><div class="label">Mag − Gyro</div><div class="value"><span id="diff">--</span><span class="unit">°</span></div></div>
+    <div class="card"><div class="label">Gyro rate</div><div class="value"><span id="rate">--</span><span class="unit">°/s</span></div></div>
+    <div class="card"><div class="label">Samples</div><div class="value"><span id="count">0</span></div></div>
+  </section>
+  <section class="heading-charts">
+    <div class="panel"><h2>航向角</h2><canvas id="angleChart"></canvas><div class="legend">
+      <span><i style="background:var(--cyan)"></i>GyroDeg</span><span><i style="background:var(--green)"></i>MagDeg</span></div></div>
+    <div class="panel"><h2>角度差（Mag − Gyro）</h2><canvas id="errorChart"></canvas><div class="legend">
+      <span><i style="background:var(--orange)"></i>−180°…+180°</span></div></div>
+  </section>
+  <section class="accel-charts">
+    <div class="panel"><h2>加速度 X 轴（g）</h2><canvas id="accelXChart"></canvas><div class="legend accel-legend"></div></div>
+    <div class="panel"><h2>加速度 Y 轴（g）</h2><canvas id="accelYChart"></canvas><div class="legend accel-legend"></div></div>
+    <div class="panel"><h2>加速度 Z 轴（g）</h2><canvas id="accelZChart"></canvas><div class="legend accel-legend"></div></div>
+  </section>
+  <section class="motion-charts">
+    <div class="panel"><h2>校准滤波后的总加速度（g）</h2><canvas id="accelMagnitudeChart"></canvas><div class="legend">
+      <span><i style="background:var(--cyan)"></i>|A|</span></div></div>
+    <div class="panel"><h2>静止参考变化量（g）</h2><canvas id="accelDeltaChart"></canvas><div class="legend">
+      <span><i style="background:var(--green)"></i>向量变化 AVD（阈值0.050G）</span>
+      <span><i style="background:var(--orange)"></i>模长变化 AMD（阈值0.030G）</span></div></div>
+  </section>
+  <section class="gyro-charts">
+    <div class="panel"><h2>陀螺仪 X 轴</h2><canvas id="gyroXChart"></canvas><div class="legend gyro-legend"></div></div>
+    <div class="panel"><h2>陀螺仪 Y 轴</h2><canvas id="gyroYChart"></canvas><div class="legend gyro-legend"></div></div>
+    <div class="panel"><h2>陀螺仪 Z 轴</h2><canvas id="gyroZChart"></canvas><div class="legend gyro-legend"></div></div>
+  </section>
+  <section class="panel table-wrap"><table><thead><tr>
+    <th>Host time</th><th>ms</th><th>Gyro°</th><th>Mag°</th><th>Diff°</th><th>Rate°/s</th>
+    <th>FAX</th><th>FAY</th><th>FAZ</th><th>CAX</th><th>CAY</th><th>CAZ</th>
+    <th>|A|</th><th>AVD</th><th>AMD</th>
+    <th>GRX</th><th>GRY</th><th>GRZ</th><th>CGX</th><th>CGY</th><th>CGZ</th>
+    <th>GCRX</th><th>GCRY</th><th>GCRZ</th>
+  </tr></thead><tbody id="rows"></tbody></table></section>
+  <div class="note">加速度轴只保留 Light LPF 与 Calibration LPF。总加速度、向量变化和模长变化均来自 Calibration LPF；AVD/AMD 使用静止调光与自动关机的自适应参考。陀螺仪左轴为角速度（°/s），右轴紫色曲线为校准滤波后的逐轴角速度变化率（°/s²）。页面可以直接用当前 Chrome 打开，也可以使用启动脚本。</div>
+</main><script>
+'use strict';
+const SERVICE='6e400001-b5a3-f393-e0a9-e50e24dcca9e',TX='6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+let device=null,characteristic=null,textBuffer='',recording=true;
+const decoder=new TextDecoder(),records=[],history=[],$=id=>document.getElementById(id);
+const accelLegend='<span><i style="background:#63d6ff"></i>Light LPF</span><span><i style="background:#7cff91"></i>Calibration LPF</span>';
+document.querySelectorAll('.accel-legend').forEach(e=>e.innerHTML=accelLegend);
+const gyroLegend='<span><i style="background:#ff9d37"></i>Driver（左轴 °/s）</span><span><i style="background:#7cff91"></i>Calibration LPF（左轴 °/s）</span><span><i style="background:#cc8cff"></i>变化率（右轴 °/s²，阈值 ±25）</span>';
+document.querySelectorAll('.gyro-legend').forEach(e=>e.innerHTML=gyroLegend);
+function setStatus(text,on=false){$('status').textContent=text;$('dot').classList.toggle('on',on);}
+function wrapDiff(v){while(v>180)v-=360;while(v<-180)v+=360;return v;}
+function number(v){const n=Number(v);return Number.isFinite(n)?n:NaN;}
+function parseLine(line){if(!line.startsWith('COMPASS_DIAG,'))return null;const r={};for(const token of line.split(',').slice(1)){const at=token.indexOf('=');if(at>0)r[token.slice(0,at)]=number(token.slice(at+1));}if(!Number.isFinite(r.ms))return null;r.hostTime=new Date().toISOString();r.DiffDeg=Number.isFinite(r.MagDeg)&&Number.isFinite(r.GyroDeg)?wrapDiff(r.MagDeg-r.GyroDeg):NaN;return r;}
+function display(v,digits=2){return Number.isFinite(v)?v.toFixed(digits):'--';}
+function accept(r){if(recording)records.push(r);history.push(r);if(history.length>300)history.shift();
+  $('gyro').textContent=display(r.GyroDeg);$('mag').textContent=display(r.MagDeg);$('diff').textContent=display(r.DiffDeg);$('rate').textContent=display(r.GyroRate);$('count').textContent=records.length;$('download').disabled=records.length===0;
+  const fields=[r.hostTime.slice(11,23),r.ms,display(r.GyroDeg),display(r.MagDeg),display(r.DiffDeg),display(r.GyroRate),display(r.FAX,4),display(r.FAY,4),display(r.FAZ,4),display(r.CAX,4),display(r.CAY,4),display(r.CAZ,4),display(r.AMAG,4),display(r.AVD,4),display(r.AMD,4),display(r.GRX,4),display(r.GRY,4),display(r.GRZ,4),display(r.CGX,4),display(r.CGY,4),display(r.CGZ,4),display(r.GCRX,2),display(r.GCRY,2),display(r.GCRZ,2)];
+  const tr=document.createElement('tr');tr.innerHTML=fields.map(x=>`<td>${x}</td>`).join('');$('rows').prepend(tr);while($('rows').children.length>25)$('rows').lastChild.remove();drawAll();}
+function onNotify(event){const v=event.target.value;textBuffer+=decoder.decode(new Uint8Array(v.buffer,v.byteOffset,v.byteLength),{stream:true});let n;while((n=textBuffer.indexOf('\n'))>=0){const line=textBuffer.slice(0,n).trim();textBuffer=textBuffer.slice(n+1);const r=parseLine(line);if(r)accept(r);}}
+async function connect(){try{if(!navigator.bluetooth)throw new Error('当前 Chrome 环境不支持 Web Bluetooth');setStatus('正在选择设备…');device=await navigator.bluetooth.requestDevice({filters:[{services:[SERVICE]}]});device.addEventListener('gattserverdisconnected',()=>{setStatus('连接已断开');$('connect').textContent='重新连接';$('record').disabled=true;});setStatus('正在建立 BLE 连接…');const server=await device.gatt.connect(),service=await server.getPrimaryService(SERVICE);characteristic=await service.getCharacteristic(TX);await characteristic.startNotifications();characteristic.addEventListener('characteristicvaluechanged',onNotify);setStatus(`已连接：${device.name||'Digital-Compass'}`,true);$('connect').textContent='断开';$('record').disabled=false;}catch(e){console.error(e);setStatus(`连接失败：${e.message}`);}}
+async function toggleConnection(){if(device?.gatt?.connected){device.gatt.disconnect();$('connect').textContent='重新连接';return;}await connect();}
+function clearData(){records.length=0;history.length=0;$('rows').innerHTML='';$('count').textContent='0';$('download').disabled=true;drawAll();}
+function downloadCsv(){const columns=['hostTime','ms','GyroDeg','MagDeg','DiffDeg','GyroRate','FAX','FAY','FAZ','CAX','CAY','CAZ','AMAG','AVD','AMD','GRX','GRY','GRZ','CGX','CGY','CGZ','GCRX','GCRY','GCRZ'];const csv=[columns.join(','),...records.map(r=>columns.map(c=>Number.isFinite(r[c])||c==='hostTime'?r[c]:'').join(','))].join('\r\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'})),a=document.createElement('a');a.href=url;a.download=`compass-${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;a.click();URL.revokeObjectURL(url);}
+function setupCanvas(canvas){const dpr=devicePixelRatio||1,r=canvas.getBoundingClientRect();canvas.width=Math.max(1,r.width*dpr);canvas.height=Math.max(1,r.height*dpr);const c=canvas.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);return{c,w:r.width,h:r.height};}
+function autoRange(keys,minimumSpan=.08,symmetric=false){const values=[];for(const r of history)for(const k of keys)if(Number.isFinite(r[k]))values.push(r[k]);if(!values.length)return symmetric?[-minimumSpan/2,minimumSpan/2]:[-1,1];let min=Math.min(...values),max=Math.max(...values);if(symmetric){const extent=Math.max(Math.abs(min),Math.abs(max),minimumSpan/2)*1.12;return[-extent,extent];}let span=max-min;if(span<minimumSpan){const mid=(min+max)/2;min=mid-minimumSpan/2;max=mid+minimumSpan/2;span=minimumSpan;}const margin=span*.12;return[min-margin,max+margin];}
+function drawSeries(c,key,color,range,p,w,h,width=1.6){c.beginPath();c.strokeStyle=color;c.lineWidth=width;let started=false;history.forEach((r,i)=>{const v=r[key];if(!Number.isFinite(v)){started=false;return;}const x=p.l+(w-p.l-p.r)*i/Math.max(1,history.length-1),y=p.t+(range[1]-v)/(range[1]-range[0])*(h-p.t-p.b);if(!started){c.moveTo(x,y);started=true;}else c.lineTo(x,y);});c.stroke();}
+function chart(canvasId,keys,colors,min,max,decimals=0){const{c,w,h}=setupCanvas($(canvasId));c.clearRect(0,0,w,h);const p={l:48,r:10,t:8,b:22};c.strokeStyle='#26322b';c.fillStyle='#829087';c.font='11px Segoe UI';c.lineWidth=1;for(let i=0;i<=4;i++){const y=p.t+(h-p.t-p.b)*i/4,val=max-(max-min)*i/4;c.beginPath();c.moveTo(p.l,y);c.lineTo(w-p.r,y);c.stroke();c.fillText(val.toFixed(decimals),4,y+4);}if(history.length<2)return;keys.forEach((key,j)=>drawSeries(c,key,colors[j],[min,max],p,w,h));}
+function accelChart(id,keys){const range=autoRange(keys,.08);chart(id,keys,['#63d6ff','#7cff91'],range[0],range[1],3);}
+function movementChart(){const id='accelDeltaChart',keys=['AVD','AMD'],range=autoRange(keys,.06);range[0]=0;range[1]=Math.max(range[1],.06);const{c,w,h}=setupCanvas($(id)),p={l:48,r:10,t:8,b:22};c.font='11px Segoe UI';c.lineWidth=1;for(let i=0;i<=4;i++){const y=p.t+(h-p.t-p.b)*i/4,value=range[1]-(range[1]-range[0])*i/4;c.strokeStyle='#26322b';c.beginPath();c.moveTo(p.l,y);c.lineTo(w-p.r,y);c.stroke();c.fillStyle='#829087';c.fillText(value.toFixed(3),4,y+4);}for(const [value,color] of [[.05,'#7cff9188'],[.03,'#ff9d3788']]){const y=p.t+(range[1]-value)/(range[1]-range[0])*(h-p.t-p.b);c.save();c.strokeStyle=color;c.setLineDash([5,4]);c.beginPath();c.moveTo(p.l,y);c.lineTo(w-p.r,y);c.stroke();c.restore();}if(history.length>=2){drawSeries(c,'AVD','#7cff91',range,p,w,h);drawSeries(c,'AMD','#ff9d37',range,p,w,h);}}
+function gyroChart(id,leftKeys,rightKey){const{c,w,h}=setupCanvas($(id));c.clearRect(0,0,w,h);const p={l:48,r:58,t:8,b:22},left=autoRange(leftKeys,.5),right=autoRange([rightKey],50,true);c.font='11px Segoe UI';c.lineWidth=1;for(let i=0;i<=4;i++){const y=p.t+(h-p.t-p.b)*i/4,leftValue=left[1]-(left[1]-left[0])*i/4,rightValue=right[1]-(right[1]-right[0])*i/4;c.strokeStyle='#26322b';c.beginPath();c.moveTo(p.l,y);c.lineTo(w-p.r,y);c.stroke();c.fillStyle='#829087';c.fillText(leftValue.toFixed(2),4,y+4);c.fillStyle='#b88bd1';c.fillText(rightValue.toFixed(0),w-p.r+6,y+4);}for(const threshold of [-25,25]){const y=p.t+(right[1]-threshold)/(right[1]-right[0])*(h-p.t-p.b);c.save();c.strokeStyle='#cc8cff99';c.setLineDash([5,4]);c.beginPath();c.moveTo(p.l,y);c.lineTo(w-p.r,y);c.stroke();c.restore();}if(history.length<2)return;drawSeries(c,leftKeys[0],'#ff9d37',left,p,w,h);drawSeries(c,leftKeys[1],'#7cff91',left,p,w,h);drawSeries(c,rightKey,'#cc8cff',right,p,w,h,1.5);}
+function drawAll(){chart('angleChart',['GyroDeg','MagDeg'],['#63d6ff','#7cff91'],0,360);chart('errorChart',['DiffDeg'],['#ff9d37'],-180,180);accelChart('accelXChart',['FAX','CAX']);accelChart('accelYChart',['FAY','CAY']);accelChart('accelZChart',['FAZ','CAZ']);const magRange=autoRange(['AMAG'],.08);chart('accelMagnitudeChart',['AMAG'],['#63d6ff'],magRange[0],magRange[1],3);movementChart();gyroChart('gyroXChart',['GRX','CGX'],'GCRX');gyroChart('gyroYChart',['GRY','CGY'],'GCRY');gyroChart('gyroZChart',['GRZ','CGZ'],'GCRZ');}
+$('connect').addEventListener('click',toggleConnection);$('record').addEventListener('click',()=>{recording=!recording;$('record').textContent=recording?'暂停记录':'继续记录';});$('clear').addEventListener('click',clearData);$('download').addEventListener('click',downloadCsv);addEventListener('resize',drawAll);drawAll();
+</script></body></html>
